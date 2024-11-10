@@ -75,21 +75,27 @@ def main():
     torch.set_grad_enabled(False)
 
     # setup DDP.
-    dist.init_process_group("nccl")
-    rank = dist.get_rank()
-    world_size = dist.get_world_size() 
-    device = rank % torch.cuda.device_count()
+    if "WORLD_SIZE" in os.environ:
+        dist.init_process_group("nccl")
+        rank = dist.get_rank()
+        world_size = dist.get_world_size() 
+        device = rank % torch.cuda.device_count()
+    else:
+        rank = 0
+        world_size = 1
+        device = 0
     seed = seed + rank
     torch.manual_seed(seed)
     torch.cuda.set_device(device)
-    print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.") 
+    print(f"Starting rank={rank}, seed={seed}, world_size={world_size}.") 
 
     if rank == 0:
         # download the maskgit-vq tokenizer
         hf_hub_download(repo_id="fun-research/TiTok", filename=f"{config.model.vq_model.pretrained_tokenizer_weight}", local_dir="./")
         # download the rar generator weight
         hf_hub_download(repo_id="yucornetto/RAR", filename=f"{config.experiment.generator_checkpoint}", local_dir="./")
-    dist.barrier()
+    if world_size > 1:
+        dist.barrier()
 
     # maskgit-vq as tokenizer
     tokenizer = create_pretrained_tokenizer(config)
@@ -100,16 +106,17 @@ def main():
     if rank == 0:
         os.makedirs(sample_folder_dir, exist_ok=True)
         print(f"Saving .png samples at {sample_folder_dir}")
-    dist.barrier()
+    if world_size > 1:
+        dist.barrier()
 
     # Figure out how many samples we need to generate on each GPU and how many iterations we need to run:
     n = per_proc_batch_size
-    global_batch_size = n * dist.get_world_size()
+    global_batch_size = n * world_size
     assert num_fid_samples % global_batch_size == 0
     if rank == 0:
         print(f"Total number of images that will be sampled: {num_fid_samples}")
 
-    samples_needed_this_gpu = int(num_fid_samples // dist.get_world_size())
+    samples_needed_this_gpu = int(num_fid_samples // world_size)
     assert samples_needed_this_gpu % n == 0, "samples_needed_this_gpu must be divisible by the per-GPU batch size"
     iterations = int(samples_needed_this_gpu // n)
     pbar = range(iterations)
@@ -136,17 +143,19 @@ def main():
         )
         # Save samples to disk as individual .png files
         for i, sample in enumerate(samples):
-            index = i * dist.get_world_size() + rank + total
+            index = i * world_size + rank + total
             Image.fromarray(sample).save(f"{sample_folder_dir}/{index:06d}.png")
         total += global_batch_size
 
     # Make sure all processes have finished saving their samples before attempting to convert to .npz
-    dist.barrier()
+    if world_size > 1:
+        dist.barrier()
     if rank == 0:
         create_npz_from_sample_folder(sample_folder_dir, num_fid_samples)
         print("Done.")
-    dist.barrier()
-    dist.destroy_process_group()
+    if world_size > 1:
+        dist.barrier()
+        dist.destroy_process_group()
 
 if __name__ == "__main__":
     main()
