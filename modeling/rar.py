@@ -20,6 +20,7 @@ Reference:
 """
 
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -318,6 +319,7 @@ class RAR(BaseModel):
 
     def forward_fn(self, input_ids, condition,
                    return_labels=False,
+                   pag_batch_inds=None,
                    orders=None,
                    is_sampling=False):
         # TODO: optimize the inference time where the computation of pos_embed etc can be shared across sampling steps.
@@ -370,19 +372,21 @@ class RAR(BaseModel):
         )
         x = x + target_aware_pos_embed[:, :x.shape[1]]
 
-        # causal attention masking
-        attn_mask = self.attn_mask[:x.shape[1], :x.shape[1]]
-        
         # seperate condition token for each step, at generation, we start from 1 to seq len
         condition_token = condition_token.unsqueeze(1) + self.timesteps_embeddings[:, :x.shape[1]]
 
-        if self.blocks[0].attn.kv_cache:
-            if self.blocks[0].attn.k_cache is not None and self.blocks[0].attn.v_cache is not None:
-                # only need to process the last token
-                x = x[:, -1:]
-                attn_mask = None
-                # only keep the last condition
-                condition_token = condition_token[:, -1:]
+        # causal attention masking
+        attn_mask = self.attn_mask[:x.shape[1], :x.shape[1]]
+        if self.blocks[0].attn.kv_cache and (k_cache := self.blocks[0].attn.k_cache is not None):
+            # only need to process the last token
+            x = x[:, -1:]
+            # only keep the last condition
+            condition_token = condition_token[:, -1:]
+
+            if pag_batch_inds is not None:
+                attn_mask = torch.ones((x.shape[0], 1, k_cache.shape[-2]), device=x.device)
+                attn_mask[pag_batch_inds, :, 2:-1] = float("-inf")
+        
 
         for idx, blk in enumerate(self.blocks):
             if self.use_checkpoint:
@@ -411,6 +415,8 @@ class RAR(BaseModel):
                  randomize_temperature,
                  guidance_scale_pow,
                  kv_cache=True,
+                 cd_beta=0.0,
+                 cd_alpha=0.1,
                  **kwargs):
         condition = self.preprocess_condition(
             condition, cond_drop_prob=0.0)
@@ -432,7 +438,21 @@ class RAR(BaseModel):
                 ((step / self.image_seq_len) ** scale_pow) * torch.pi)) * 1/2
             cfg_scale = (guidance_scale - 1) * scale_step + 1
 
-            if guidance_scale != 0:
+            if cd_beta != 0.0:            
+                assert guidance_scale > 0
+                pag_inds = torch.arange(num_samples, 2*num_samples, device=device)
+                logits = self.forward_fn(
+                    torch.cat([ids, ids, ids], dim=0),
+                    torch.cat([condition, condition, self.get_none_condition(condition)], dim=0),
+                    orders=cfg_orders, is_sampling=True, pag_batch_inds=pag_inds)
+
+                cond_logits, cd_logits, uncond_logits = logits[:num_samples], logits[num_samples:2*num_samples], logits[2*num_samples:]
+                logits = uncond_logits + (cond_logits - uncond_logits) * cfg_scale
+                psi = cd_beta * scale_step
+                cutoff = math.log(cd_alpha) + logits.max(dim=-1, keepdim=True).values
+                diffs = (1 + psi) * logits - psi * cd_logits
+                logits = diffs.masked_fill(logits < cutoff, -1e20)
+            elif guidance_scale != 0:
                 logits = self.forward_fn(
                     torch.cat([ids, ids], dim=0),
                     torch.cat([condition, self.get_none_condition(condition)], dim=0),

@@ -34,6 +34,9 @@ model:
         guidance_scale_pow: 2.75
         use_checkpoint: False # True to save memory
 
+        cd_beta: 0.0
+        cd_alpha: 0.1
+
         randomness_anneal_start: 125000 # 200 epoch
         randomness_anneal_end: 187500 # 300 epoch
 

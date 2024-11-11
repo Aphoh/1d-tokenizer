@@ -139,6 +139,8 @@ def main():
             randomize_temperature=config.model.generator.randomize_temperature,
             guidance_scale=config.model.generator.guidance_scale,
             guidance_scale_pow=config.model.generator.guidance_scale_pow,
+            cd_beta=config.model.generator.cd_beta,
+            cd_alpha=config.model.generator.cd_alpha,
             device=device
         )
         # Save samples to disk as individual .png files
