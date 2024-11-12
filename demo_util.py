@@ -89,7 +89,7 @@ def sample_fn(generator,
     if not isinstance(labels, torch.Tensor):
         labels = torch.LongTensor(labels).to(device)
 
-    generated_tokens = generator.generate(
+    generated_tokens, extras = generator.generate(
         condition=labels,
         guidance_scale=guidance_scale,
         guidance_decay=guidance_decay,
@@ -104,9 +104,9 @@ def sample_fn(generator,
         generated_tokens.view(generated_tokens.shape[0], -1)
     )
     if return_tensor:
-        return generated_image
+        return generated_image, extras
 
     generated_image = torch.clamp(generated_image, 0.0, 1.0)
     generated_image = (generated_image * 255.0).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
 
-    return generated_image
+    return generated_image, extras

@@ -150,7 +150,7 @@ def main():
             index = i * world_size + rank + total
             Image.fromarray(sample).save(f"{sample_folder_dir}/{index:06d}.png")
         total += global_batch_size
-        if cur_idx == 1:
+        if cur_idx == 1 and rank == 0:
             torch.save(extras, f"{sample_folder_dir}/extras.pth")
 
     # Make sure all processes have finished saving their samples before attempting to convert to .npz
