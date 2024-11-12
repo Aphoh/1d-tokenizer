@@ -560,7 +560,7 @@ class RAR(BaseModel):
             sampled = torch.multinomial(probs, num_samples=1)
             if cd_logits is not None:
                 cond_last = cond_logits[:, -1]
-                cd_last = cond_logits[:, -1]
+                cd_last = cd_logits[:, -1]
                 cond_chosen = torch.gather(cond_last, 1, sampled)
                 cd_chosen = torch.gather(cd_last, 1, sampled)
                 extras["cond-perturb"].append(cond_chosen - cd_chosen)
