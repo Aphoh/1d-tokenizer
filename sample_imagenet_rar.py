@@ -63,7 +63,7 @@ def create_npz_from_sample_folder(sample_dir, num=50_000):
 
 def main():
     config = demo_util.get_config_cli()
-    num_fid_samples = 50000
+    num_fid_samples = 10000
     per_proc_batch_size = 50
     sample_folder_dir = config.experiment.output_dir
     seed = 42
@@ -128,11 +128,13 @@ def main():
     all_classes = np.array(all_classes[rank * subset_len: (rank+1)*subset_len], dtype=np.int64)
     cur_idx = 0
 
+    if rank == 0:
+        print(f"Running with alpha: {config.model.generator.cd_alpha}, beta: {config.model.generator.cd_beta}")
     for _ in pbar:
         y = torch.from_numpy(all_classes[cur_idx * n: (cur_idx+1)*n]).to(device)
         cur_idx += 1
 
-        samples = demo_util.sample_fn(
+        samples, extras = demo_util.sample_fn(
             generator=generator,
             tokenizer=tokenizer,
             labels=y.long(),
@@ -148,6 +150,8 @@ def main():
             index = i * world_size + rank + total
             Image.fromarray(sample).save(f"{sample_folder_dir}/{index:06d}.png")
         total += global_batch_size
+        if cur_idx == 1:
+            torch.save(extras, f"{sample_folder_dir}/extras.pth")
 
     # Make sure all processes have finished saving their samples before attempting to convert to .npz
     if world_size > 1:

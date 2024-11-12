@@ -19,7 +19,7 @@ Reference:
     https://github.com/facebookresearch/DiT/blob/main/models.py
 """
 
-
+from collections import defaultdict
 import math
 import torch
 import torch.nn as nn
@@ -31,6 +31,7 @@ from typing import Optional
 import numpy as np
 import random
 
+
 # util function
 def build_causal_mask(seq_length):
     mask = torch.empty(seq_length, seq_length)
@@ -38,39 +39,49 @@ def build_causal_mask(seq_length):
     mask.triu_(1)  # zero out the lower diagonal
     return mask
 
+
 # weight init
 def init_weights(module):
-    if (isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d) or
-     isinstance(module, nn.Conv2d) or isinstance(module, nn.Conv3d)):
-        module.weight.data = nn.init.trunc_normal_(module.weight.data, mean=0.0, std=0.02)
+    if (
+        isinstance(module, nn.Linear)
+        or isinstance(module, nn.Conv1d)
+        or isinstance(module, nn.Conv2d)
+        or isinstance(module, nn.Conv3d)
+    ):
+        module.weight.data = nn.init.trunc_normal_(
+            module.weight.data, mean=0.0, std=0.02
+        )
         if module.bias is not None:
             module.bias.data.zero_()
     elif isinstance(module, nn.Embedding):
-        module.weight.data = nn.init.trunc_normal_(module.weight.data, mean=0.0, std=0.02)
+        module.weight.data = nn.init.trunc_normal_(
+            module.weight.data, mean=0.0, std=0.02
+        )
     elif isinstance(module, nn.LayerNorm):
         if module.bias is not None:
             module.bias.data.zero_()
         if module.weight is not None:
             module.weight.data.fill_(1.0)
 
+
 # attention layer with KV cache supported
 class Attention(nn.Module):
     def __init__(
-            self,
-            dim: int,
-            num_heads: int = 8,
-            qkv_bias: bool = False,
-            qk_norm: bool = False,
-            attn_drop: float = 0.,
-            proj_drop: float = 0.,
-            norm_layer: nn.Module = nn.LayerNorm,
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        qk_norm: bool = False,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+        norm_layer: nn.Module = nn.LayerNorm,
     ) -> None:
         super().__init__()
-        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
         self.dim = dim
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
         self.fused_attn = True
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -90,7 +101,11 @@ class Attention(nn.Module):
 
     def forward(self, x: torch.Tensor, attn_mask=None) -> torch.Tensor:
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -110,49 +125,52 @@ class Attention(nn.Module):
             v = v_cache
 
         x = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask,
-            dropout_p=self.attn_drop.p if self.training else 0.,
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
         )
         x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
 
+
 def modulate(x, shift, scale):
     return x * (1 + scale) + shift
+
 
 class FinalLayer(nn.Module):
     def __init__(self, dim, norm_layer):
         super().__init__()
         self.norm_final = norm_layer(dim, elementwise_affine=False)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(), nn.Linear(dim, 2*dim)
-        )
-    
+        self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(dim, 2 * dim))
+
     def forward(self, x, c):
         scale, shift = self.adaLN_modulation(c).chunk(2, dim=-1)
         x = modulate(self.norm_final(x), shift, scale)
         return x
-    
+
 
 # basic transformer block
 class Block(nn.Module):
     def __init__(
-            self,
-            dim: int,
-            num_heads: int,
-            mlp_ratio: float = 4.,
-            qkv_bias: bool = False,
-            qk_norm: bool = False,
-            proj_drop: float = 0.,
-            attn_drop: float = 0.,
-            act_layer: nn.Module = nn.GELU,
-            norm_layer: nn.Module = nn.LayerNorm,
-            mlp_layer: nn.Module = Mlp,
+        self,
+        dim: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        qkv_bias: bool = False,
+        qk_norm: bool = False,
+        proj_drop: float = 0.0,
+        attn_drop: float = 0.0,
+        act_layer: nn.Module = nn.GELU,
+        norm_layer: nn.Module = nn.LayerNorm,
+        mlp_layer: nn.Module = Mlp,
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
-        
+
         self.attn = Attention(
             dim=dim,
             num_heads=num_heads,
@@ -172,14 +190,16 @@ class Block(nn.Module):
         )
 
         self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(dim, 6 * dim, bias=True)
+            nn.SiLU(), nn.Linear(dim, 6 * dim, bias=True)
         )
 
-
-    def forward(self, x: torch.Tensor, attn_mask=None, c = None) -> torch.Tensor:
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), attn_mask=attn_mask)
+    def forward(self, x: torch.Tensor, attn_mask=None, c=None) -> torch.Tensor:
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.adaLN_modulation(c).chunk(6, dim=-1)
+        )
+        x = x + gate_msa * self.attn(
+            modulate(self.norm1(x), shift_msa, scale_msa), attn_mask=attn_mask
+        )
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
@@ -187,7 +207,7 @@ class Block(nn.Module):
 class RAR(BaseModel):
     def __init__(self, config):
         super().__init__()
-        
+
         self.config = config
         # parse the configs
         embed_dim = config.model.generator.hidden_size
@@ -199,48 +219,57 @@ class RAR(BaseModel):
         image_seq_len = config.model.generator.image_seq_len
         target_codebook_size = config.model.vq_model.codebook_size
         condition_num_classes = config.model.generator.condition_num_classes
-        norm_layer=partial(nn.LayerNorm, eps=1e-6)
+        norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
         dropout_rate = config.model.generator.dropout
         attn_dropout_rate = config.model.generator.attn_drop
-   
+
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.blocks = nn.ModuleList([
-            Block(
-                dim=embed_dim,
-                num_heads=num_heads,
-                mlp_ratio=mlp_ratio,
-                qkv_bias=True,
-                qk_norm=True,
-                proj_drop=dropout_rate,
-                attn_drop=attn_dropout_rate,
-                norm_layer=norm_layer)
-            for i in range(depth)])
+        self.blocks = nn.ModuleList(
+            [
+                Block(
+                    dim=embed_dim,
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,
+                    qkv_bias=True,
+                    qk_norm=True,
+                    proj_drop=dropout_rate,
+                    attn_drop=attn_dropout_rate,
+                    norm_layer=norm_layer,
+                )
+                for i in range(depth)
+            ]
+        )
 
         self.embeddings = nn.Embedding(
-            target_codebook_size + 1 + condition_num_classes + 1, embed_dim)
+            target_codebook_size + 1 + condition_num_classes + 1, embed_dim
+        )
 
         self.pos_embed = nn.init.trunc_normal_(
-            nn.Parameter(torch.zeros(1, image_seq_len + 1024, embed_dim)), 0., 0.02)
+            nn.Parameter(torch.zeros(1, image_seq_len + 1024, embed_dim)), 0.0, 0.02
+        )
 
         self.target_aware_pos_embed = nn.init.trunc_normal_(
-            nn.Parameter(torch.zeros(1, image_seq_len + 1024, embed_dim)), 0., 0.02)
+            nn.Parameter(torch.zeros(1, image_seq_len + 1024, embed_dim)), 0.0, 0.02
+        )
 
         # number of steps == image_seq_len
         self.timesteps_embeddings = nn.init.trunc_normal_(
-            nn.Parameter(torch.zeros(1, image_seq_len + 100, embed_dim)), 0., 0.02)
+            nn.Parameter(torch.zeros(1, image_seq_len + 100, embed_dim)), 0.0, 0.02
+        )
         self.adaln_before_head = FinalLayer(embed_dim, norm_layer=norm_layer)
-        self.lm_head = nn.Linear(embed_dim,
-                                 target_codebook_size, bias=True)
+        self.lm_head = nn.Linear(embed_dim, target_codebook_size, bias=True)
         self.condition_num_classes = condition_num_classes
         self.image_seq_len = image_seq_len
         self.target_codebook_size = target_codebook_size
-        self.none_condition_id = self.condition_num_classes + self.target_codebook_size + 1
-        
+        self.none_condition_id = (
+            self.condition_num_classes + self.target_codebook_size + 1
+        )
+
         self.apply(init_weights)
 
-        attn_mask = build_causal_mask(self.image_seq_len + 1024) # include condition
-        self.register_buffer('attn_mask', attn_mask, persistent=False)
+        attn_mask = build_causal_mask(self.image_seq_len + 1024)  # include condition
+        self.register_buffer("attn_mask", attn_mask, persistent=False)
 
         self.use_checkpoint = config.model.generator.get("use_checkpoint", False)
 
@@ -271,20 +300,29 @@ class RAR(BaseModel):
         for _ in range(batch_size):
             if random.random() < self.random_ratio:
                 # random order
-                shuffled_orders.append(torch.randperm(self.image_seq_len, device=x.device))
+                shuffled_orders.append(
+                    torch.randperm(self.image_seq_len, device=x.device)
+                )
             else:
                 # raster order
-                shuffled_orders.append(torch.arange(self.image_seq_len, device=x.device))
-                
+                shuffled_orders.append(
+                    torch.arange(self.image_seq_len, device=x.device)
+                )
+
         shuffled_orders = torch.stack(shuffled_orders)
         return shuffled_orders.to(x.device)
-    
+
     def set_random_ratio(self, new_ratio):
         self.random_ratio = new_ratio
 
     def get_raster_orders(self, x):
         batch_size = x.shape[0]
-        shuffled_orders = torch.stack([torch.arange(self.image_seq_len, device=x.device) for _ in range(batch_size)])
+        shuffled_orders = torch.stack(
+            [
+                torch.arange(self.image_seq_len, device=x.device)
+                for _ in range(batch_size)
+            ]
+        )
         return shuffled_orders
 
     def shuffle(self, x, orders):
@@ -304,24 +342,28 @@ class RAR(BaseModel):
     def preprocess_condition(self, condition, cond_drop_prob=0.0):
         # Set class condition to None condition
         drop_label_mask = torch.rand_like(condition, dtype=torch.float) < cond_drop_prob
-        condition = condition + self.target_codebook_size + 1  # [0, 999] -> [codebook_size + 1, codebook_size + 999]
+        condition = (
+            condition + self.target_codebook_size + 1
+        )  # [0, 999] -> [codebook_size + 1, codebook_size + 999]
         condition[drop_label_mask] = self.none_condition_id
         return condition
 
-    def get_none_condition(self,
-                           condition
-                           ):
+    def get_none_condition(self, condition):
         return torch.full_like(condition, self.none_condition_id)
-    
+
     def forward(self, input_ids, condition, return_labels=False):
         orders = self.sample_orders(input_ids)
         return self.forward_fn(input_ids, condition, return_labels, orders)
 
-    def forward_fn(self, input_ids, condition,
-                   return_labels=False,
-                   pag_batch_inds=None,
-                   orders=None,
-                   is_sampling=False):
+    def forward_fn(
+        self,
+        input_ids,
+        condition,
+        return_labels=False,
+        pag_batch_inds=None,
+        orders=None,
+        is_sampling=False,
+    ):
         # TODO: optimize the inference time where the computation of pos_embed etc can be shared across sampling steps.
         # Token space:
         #  [0, codebook_size - 1]                       : those are the learned quantized image tokens
@@ -334,8 +376,13 @@ class RAR(BaseModel):
 
         labels = input_ids.clone()
         # prepend condition token
-        input_ids = torch.cat([condition.view(condition.shape[0], -1),
-                               input_ids.view(input_ids.shape[0], -1),], dim=1)
+        input_ids = torch.cat(
+            [
+                condition.view(condition.shape[0], -1),
+                input_ids.view(input_ids.shape[0], -1),
+            ],
+            dim=1,
+        )
         embeddings = self.embeddings(input_ids)
         condition_token = embeddings[:, 0]
 
@@ -345,18 +392,26 @@ class RAR(BaseModel):
         # cls_token, condition, the permute does not impact these prefix tokens.
         prefix = 2
         pos_embed_prefix = pos_embed[:, :prefix]
-        pos_embed_postfix = self.shuffle(pos_embed[:, prefix:prefix+self.image_seq_len], orders)
+        pos_embed_postfix = self.shuffle(
+            pos_embed[:, prefix : prefix + self.image_seq_len], orders
+        )
 
         # prepare target-aware positional embeddings.
-        target_aware_pos_embed = self.target_aware_pos_embed.repeat(input_ids.shape[0], 1, 1)
+        target_aware_pos_embed = self.target_aware_pos_embed.repeat(
+            input_ids.shape[0], 1, 1
+        )
         # target_aware_pos_embed_prefix = target_aware_pos_embed[:, :prefix]
-        target_aware_pos_embed_postfix = self.shuffle(target_aware_pos_embed[:, prefix:prefix+self.image_seq_len], orders)
+        target_aware_pos_embed_postfix = self.shuffle(
+            target_aware_pos_embed[:, prefix : prefix + self.image_seq_len], orders
+        )
 
         if not is_sampling:
             # shuffle labels
             labels = self.shuffle(labels, orders)
             # randomized permutation: during training, we need to shuffle the input_ids's order but not for sampling
-            embeddings = torch.cat([embeddings[:, :1], self.shuffle(embeddings[:, 1:], orders)], dim=1)
+            embeddings = torch.cat(
+                [embeddings[:, :1], self.shuffle(embeddings[:, 1:], orders)], dim=1
+            )
 
         x = embeddings
         # prepend the cls token
@@ -364,42 +419,58 @@ class RAR(BaseModel):
         x = torch.cat((cls_tokens, x), dim=1)
 
         # add original pos embed
-        x = x + torch.cat([pos_embed_prefix, pos_embed_postfix], dim=1)[:, :x.shape[1]]
+        x = x + torch.cat([pos_embed_prefix, pos_embed_postfix], dim=1)[:, : x.shape[1]]
 
         # add target-aware pos embed
         target_aware_pos_embed = torch.cat(
-            [torch.zeros_like(x[:, :prefix-1]), target_aware_pos_embed_postfix, torch.zeros_like(x[:, -1:])], dim=1
+            [
+                torch.zeros_like(x[:, : prefix - 1]),
+                target_aware_pos_embed_postfix,
+                torch.zeros_like(x[:, -1:]),
+            ],
+            dim=1,
         )
-        x = x + target_aware_pos_embed[:, :x.shape[1]]
+        x = x + target_aware_pos_embed[:, : x.shape[1]]
 
         # seperate condition token for each step, at generation, we start from 1 to seq len
-        condition_token = condition_token.unsqueeze(1) + self.timesteps_embeddings[:, :x.shape[1]]
+        condition_token = (
+            condition_token.unsqueeze(1) + self.timesteps_embeddings[:, : x.shape[1]]
+        )
 
         # causal attention masking
-        attn_mask = self.attn_mask[:x.shape[1], :x.shape[1]]
-        if self.blocks[0].attn.kv_cache and (k_cache := self.blocks[0].attn.k_cache is not None):
+        attn_mask = self.attn_mask[: x.shape[1], : x.shape[1]]
+        if self.blocks[0].attn.kv_cache and self.blocks[0].attn.k_cache is not None:
             # only need to process the last token
             x = x[:, -1:]
             # only keep the last condition
             condition_token = condition_token[:, -1:]
 
             if pag_batch_inds is not None:
-                attn_mask = torch.ones((x.shape[0], 1, k_cache.shape[-2]), device=x.device)
-                attn_mask[pag_batch_inds, :, 2:-1] = float("-inf")
-        
+                assert (
+                    pag_batch_inds.max() < x.shape[0]
+                ), f"pag_batch_inds: {pag_batch_inds}, x.shape: {x.shape}"
+                k_cache = self.blocks[0].attn.k_cache
+                attn_mask = torch.ones(
+                    (x.shape[0], 1, 1, k_cache.shape[-2] + 1),
+                    device=x.device,
+                    dtype=bool,
+                )
+                attn_mask[pag_batch_inds, :, :, 2:-1] = False
+            else:
+                attn_mask = None
 
         for idx, blk in enumerate(self.blocks):
             if self.use_checkpoint:
                 x = torch.utils.checkpoint.checkpoint(
-                        blk.forward, x, attn_mask, condition_token, use_reentrant=False)
+                    blk.forward, x, attn_mask, condition_token, use_reentrant=False
+                )
             else:
                 x = blk(x, attn_mask=attn_mask, c=condition_token)
 
         if not self.blocks[0].attn.kv_cache:
             # remove cls token
-            x = x[:, prefix - 1:]
-            condition_token = condition_token[:, prefix - 1:]
-
+            x = x[:, prefix - 1 :]
+            condition_token = condition_token[:, prefix - 1 :]
 
         x = self.adaln_before_head(x, condition_token)
         x = self.lm_head(x)
@@ -407,23 +478,24 @@ class RAR(BaseModel):
         if return_labels:
             return x, labels
         return x
-    
+
     @torch.no_grad()
-    def generate(self,
-                 condition,
-                 guidance_scale,
-                 randomize_temperature,
-                 guidance_scale_pow,
-                 kv_cache=True,
-                 cd_beta=0.0,
-                 cd_alpha=0.1,
-                 **kwargs):
-        condition = self.preprocess_condition(
-            condition, cond_drop_prob=0.0)
+    def generate(
+        self,
+        condition,
+        guidance_scale,
+        randomize_temperature,
+        guidance_scale_pow,
+        kv_cache=True,
+        cd_beta=0.0,
+        cd_alpha=0.1,
+        **kwargs,
+    ):
+        condition = self.preprocess_condition(condition, cond_drop_prob=0.0)
         device = condition.device
         num_samples = condition.shape[0]
         ids = torch.full((num_samples, 0), -1, device=device)
-        cfg_scale = 0.
+        cfg_scale = 0.0
 
         if kv_cache:
             self.enable_kv_cache()
@@ -431,22 +503,37 @@ class RAR(BaseModel):
         orders = None
         cfg_orders = None
 
+        extras = defaultdict(list)
         for step in range(self.image_seq_len):
             # ref: https://github.com/sail-sg/MDT/blob/441d6a1d49781dbca22b708bbd9ed81e9e3bdee4/masked_diffusion/models.py#L513C13-L513C23
             scale_pow = torch.ones((1), device=device) * guidance_scale_pow
-            scale_step = (1 - torch.cos(
-                ((step / self.image_seq_len) ** scale_pow) * torch.pi)) * 1/2
+            scale_step = (
+                (1 - torch.cos(((step / self.image_seq_len) ** scale_pow) * torch.pi))
+                * 1
+                / 2
+            )
             cfg_scale = (guidance_scale - 1) * scale_step + 1
 
-            if cd_beta != 0.0:            
+            cd_logits = None
+            if cd_beta != 0.0:
                 assert guidance_scale > 0
-                pag_inds = torch.arange(num_samples, 2*num_samples, device=device)
+                pag_inds = torch.arange(num_samples, 2 * num_samples, device=device)
                 logits = self.forward_fn(
                     torch.cat([ids, ids, ids], dim=0),
-                    torch.cat([condition, condition, self.get_none_condition(condition)], dim=0),
-                    orders=cfg_orders, is_sampling=True, pag_batch_inds=pag_inds)
+                    torch.cat(
+                        [condition, condition, self.get_none_condition(condition)],
+                        dim=0,
+                    ),
+                    orders=cfg_orders,
+                    is_sampling=True,
+                    pag_batch_inds=pag_inds,
+                )
 
-                cond_logits, cd_logits, uncond_logits = logits[:num_samples], logits[num_samples:2*num_samples], logits[2*num_samples:]
+                cond_logits, cd_logits, uncond_logits = (
+                    logits[:num_samples],
+                    logits[num_samples : 2 * num_samples],
+                    logits[2 * num_samples :],
+                )
                 logits = uncond_logits + (cond_logits - uncond_logits) * cfg_scale
                 psi = cd_beta * scale_step
                 cutoff = math.log(cd_alpha) + logits.max(dim=-1, keepdim=True).values
@@ -456,7 +543,9 @@ class RAR(BaseModel):
                 logits = self.forward_fn(
                     torch.cat([ids, ids], dim=0),
                     torch.cat([condition, self.get_none_condition(condition)], dim=0),
-                    orders=cfg_orders, is_sampling=True)
+                    orders=cfg_orders,
+                    is_sampling=True,
+                )
                 cond_logits, uncond_logits = logits[:num_samples], logits[num_samples:]
                 logits = uncond_logits + (cond_logits - uncond_logits) * cfg_scale
             else:
@@ -469,9 +558,21 @@ class RAR(BaseModel):
             logits = logits / randomize_temperature
             probs = F.softmax(logits, dim=-1)
             sampled = torch.multinomial(probs, num_samples=1)
-            ids = torch.cat((ids, sampled), dim = -1)
+            if cd_logits is not None:
+                cond_last = cond_logits[:, -1]
+                cd_last = cond_logits[:, -1]
+                cond_chosen = torch.gather(cond_last, 1, sampled)
+                cd_chosen = torch.gather(cd_last, 1, sampled)
+                extras["cond-perturb"].append(cond_chosen - cd_chosen)
+                kldiv = F.kl_div(
+                    F.log_softmax(cond_last, dim=-1),
+                    F.log_softmax(cd_last, dim=-1),
+                    log_target=True,
+                    reduction="none",
+                ).mean(dim=-1)
+                extras["kldiv"].append(kldiv)
 
+            ids = torch.cat((ids, sampled), dim=-1)
 
         self.disable_kv_cache()
-        return ids
-    
+        return ids, extras
